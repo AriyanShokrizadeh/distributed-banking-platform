@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Tests and static analysis
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage*
+htmlcov/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+
+# OS and temporary files
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
