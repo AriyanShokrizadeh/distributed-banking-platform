@@ -1,0 +1,36 @@
+# Git
+.git/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Tests and tools
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage*
+htmlcov/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+
+# Temporary files
+*.log
+*.tmp
+*.zip
+*.rar
+.DS_Store
+Thumbs.db
