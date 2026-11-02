@@ -1,0 +1,152 @@
+x-bank-db: &bank-db
+  image: postgres:16-alpine
+  command: [ "postgres", "-c", "max_prepared_transactions=100" ]
+  environment:
+    POSTGRES_DB: banking
+    POSTGRES_USER: banking
+    POSTGRES_PASSWORD: ${BANK_DB_PASSWORD:?Missing password}
+  healthcheck: &db-health
+    test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+    interval: 3s
+    timeout: 2s
+    retries: 15
+
+x-bank: &bank
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      SERVICE: banking
+  healthcheck: &app-health
+    test: [ "CMD", "curl", "-fsS", "--max-time", "2", "http://localhost:8000/health/ready" ]
+    interval: 5s
+    timeout: 3s
+    retries: 6
+
+x-shard-a: &shard-a
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
+  SHARD_ID: A
+  SHARD_START: "1"
+  SHARD_END: "1000"
+  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD}@db_a:5432/banking
+
+x-shard-b: &shard-b
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
+  SHARD_ID: B
+  SHARD_START: "1001"
+  SHARD_END: "2000"
+  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD}@db_b:5432/banking
+
+services:
+  db_a:
+    <<: *bank-db
+    container_name: db_a
+    volumes:
+      - db_a_data:/var/lib/postgresql/data
+      - ./database/banking_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/seed_a.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+
+  db_b:
+    <<: *bank-db
+    container_name: db_b
+    volumes:
+      - db_b_data:/var/lib/postgresql/data
+      - ./database/banking_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/seed_b.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+
+  db_coordinator:
+    image: postgres:16-alpine
+    container_name: db_coordinator
+    environment:
+      POSTGRES_DB: coordinator
+      POSTGRES_USER: coordinator
+      POSTGRES_PASSWORD: ${COORD_DB_PASSWORD:?Missing password}
+    volumes:
+      - db_coordinator_data:/var/lib/postgresql/data
+      - ./database/coordinator_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck: *db-health
+
+  bank_a1:
+    <<: *bank
+    container_name: bank_a1
+    environment:
+      <<: *shard-a
+      REPLICA_ID: A1
+    depends_on:
+      db_a: { condition: service_healthy }
+
+  bank_a2:
+    <<: *bank
+    container_name: bank_a2
+    environment:
+      <<: *shard-a
+      REPLICA_ID: A2
+    depends_on:
+      db_a: { condition: service_healthy }
+
+  bank_b1:
+    <<: *bank
+    container_name: bank_b1
+    environment:
+      <<: *shard-b
+      REPLICA_ID: B1
+    depends_on:
+      db_b: { condition: service_healthy }
+
+  bank_b2:
+    <<: *bank
+    container_name: bank_b2
+    environment:
+      <<: *shard-b
+      REPLICA_ID: B2
+    depends_on:
+      db_b: { condition: service_healthy }
+
+  coordinator:
+    container_name: coordinator
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: coordinator
+    environment:
+      DATABASE_URL: postgresql://coordinator:${COORD_DB_PASSWORD}@db_coordinator:5432/coordinator
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
+      SHARD_MAP_PATH: /app/config/shard_map.json
+      CRASH_AFTER_COMMIT_ONCE: ${CRASH_AFTER_COMMIT_ONCE:-0}
+      CRASH_AFTER_PREPARED_ONCE: ${CRASH_AFTER_PREPARED_ONCE:-0}
+    depends_on:
+      db_coordinator: { condition: service_healthy }
+    healthcheck: *app-health
+
+  gateway:
+    container_name: gateway
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    environment:
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
+      SHARD_MAP_PATH: /app/config/shard_map.json
+      COORDINATOR_URL: http://coordinator:8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      bank_a1: { condition: service_healthy }
+      bank_a2: { condition: service_healthy }
+      bank_b1: { condition: service_healthy }
+      bank_b2: { condition: service_healthy }
+      coordinator: { condition: service_healthy }
+
+volumes:
+  db_a_data:
+    name: db_a_data
+  db_b_data:
+    name: db_b_data
+  db_coordinator_data:
+    name: db_coordinator_data
+
+networks:
+  default:
+    name: banking_internal
