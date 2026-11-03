@@ -12,6 +12,7 @@ x-bank-db: &bank-db
     retries: 15
 
 x-bank: &bank
+  image: ariyanshokrizadeh/banking_platform:banking-v0.1
   build:
     context: .
     dockerfile: Dockerfile
@@ -103,6 +104,7 @@ services:
       db_b: { condition: service_healthy }
 
   coordinator:
+    image: ariyanshokrizadeh/banking_platform:cordinator-v0.1
     container_name: coordinator
     build:
       context: .
@@ -120,6 +122,7 @@ services:
     healthcheck: *app-health
 
   gateway:
+    image: ariyanshokrizadeh/banking_platform:gateway-v0.1
     container_name: gateway
     build:
       context: .
