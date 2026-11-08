@@ -1,15 +1,33 @@
+x-db-health: &db-health
+  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+  interval: 3s
+  timeout: 2s
+  retries: 20
+  start_period: 10s
+
+x-app-health: &app-health
+  test: ["CMD", "curl", "-fsS", "--max-time", "2", "http://127.0.0.1:8000/health/ready"]
+  interval: 5s
+  timeout: 3s
+  retries: 6
+  start_period: 10s
+
 x-bank-db: &bank-db
   image: postgres:16-alpine
-  command: [ "postgres", "-c", "max_prepared_transactions=100" ]
+  command: ["postgres", "-c", "max_prepared_transactions=100"]
   environment:
     POSTGRES_DB: banking
     POSTGRES_USER: banking
     POSTGRES_PASSWORD: ${BANK_DB_PASSWORD:?Missing password}
-  healthcheck: &db-health
-    test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
-    interval: 3s
-    timeout: 2s
-    retries: 15
+  healthcheck: *db-health
+
+x-seed: &seed
+  image: postgres:16-alpine
+  restart: "no"
+  environment:
+    PGPASSWORD: ${BANK_DB_PASSWORD:?Missing password}
+  tmpfs:
+    - /var/lib/postgresql/data
 
 x-bank: &bank
   image: ariyanshokrizadeh/banking_platform:banking-v0.1
@@ -18,25 +36,21 @@ x-bank: &bank
     dockerfile: Dockerfile
     args:
       SERVICE: banking
-  healthcheck: &app-health
-    test: [ "CMD", "curl", "-fsS", "--max-time", "2", "http://localhost:8000/health/ready" ]
-    interval: 5s
-    timeout: 3s
-    retries: 6
+  healthcheck: *app-health
 
 x-shard-a: &shard-a
   INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
   SHARD_ID: A
   SHARD_START: "1"
   SHARD_END: "1000"
-  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD}@db_a:5432/banking
+  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD:?Missing password}@db_a:5432/banking
 
 x-shard-b: &shard-b
   INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
   SHARD_ID: B
   SHARD_START: "1001"
   SHARD_END: "2000"
-  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD}@db_b:5432/banking
+  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD:?Missing password}@db_b:5432/banking
 
 services:
   db_a:
@@ -45,7 +59,6 @@ services:
     volumes:
       - db_a_data:/var/lib/postgresql/data
       - ./database/banking_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./database/seed_a.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
 
   db_b:
     <<: *bank-db
@@ -53,7 +66,6 @@ services:
     volumes:
       - db_b_data:/var/lib/postgresql/data
       - ./database/banking_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./database/seed_b.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
 
   db_coordinator:
     image: postgres:16-alpine
@@ -67,6 +79,24 @@ services:
       - ./database/coordinator_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     healthcheck: *db-health
 
+  seed_a:
+    <<: *seed
+    depends_on:
+      db_a:
+        condition: service_healthy
+    volumes:
+      - ./database/seed_a.sql:/seed.sql:ro
+    command: ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-1", "-h", "db_a", "-U", "banking", "-d", "banking", "-f", "/seed.sql"]
+
+  seed_b:
+    <<: *seed
+    depends_on:
+      db_b:
+        condition: service_healthy
+    volumes:
+      - ./database/seed_b.sql:/seed.sql:ro
+    command: ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-1", "-h", "db_b", "-U", "banking", "-d", "banking", "-f", "/seed.sql"]
+
   bank_a1:
     <<: *bank
     container_name: bank_a1
@@ -74,7 +104,8 @@ services:
       <<: *shard-a
       REPLICA_ID: A1
     depends_on:
-      db_a: { condition: service_healthy }
+      seed_a:
+        condition: service_completed_successfully
 
   bank_a2:
     <<: *bank
@@ -83,7 +114,8 @@ services:
       <<: *shard-a
       REPLICA_ID: A2
     depends_on:
-      db_a: { condition: service_healthy }
+      seed_a:
+        condition: service_completed_successfully
 
   bank_b1:
     <<: *bank
@@ -92,7 +124,8 @@ services:
       <<: *shard-b
       REPLICA_ID: B1
     depends_on:
-      db_b: { condition: service_healthy }
+      seed_b:
+        condition: service_completed_successfully
 
   bank_b2:
     <<: *bank
@@ -101,7 +134,8 @@ services:
       <<: *shard-b
       REPLICA_ID: B2
     depends_on:
-      db_b: { condition: service_healthy }
+      seed_b:
+        condition: service_completed_successfully
 
   coordinator:
     image: ariyanshokrizadeh/banking_platform:cordinator-v0.1
@@ -112,13 +146,14 @@ services:
       args:
         SERVICE: coordinator
     environment:
-      DATABASE_URL: postgresql://coordinator:${COORD_DB_PASSWORD}@db_coordinator:5432/coordinator
+      DATABASE_URL: postgresql://coordinator:${COORD_DB_PASSWORD:?Missing password}@db_coordinator:5432/coordinator
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
       SHARD_MAP_PATH: /app/config/shard_map.json
       CRASH_AFTER_COMMIT_ONCE: ${CRASH_AFTER_COMMIT_ONCE:-0}
       CRASH_AFTER_PREPARED_ONCE: ${CRASH_AFTER_PREPARED_ONCE:-0}
     depends_on:
-      db_coordinator: { condition: service_healthy }
+      db_coordinator:
+        condition: service_healthy
     healthcheck: *app-health
 
   gateway:
@@ -136,11 +171,17 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
-      bank_a1: { condition: service_healthy }
-      bank_a2: { condition: service_healthy }
-      bank_b1: { condition: service_healthy }
-      bank_b2: { condition: service_healthy }
-      coordinator: { condition: service_healthy }
+      bank_a1:
+        condition: service_started
+      bank_a2:
+        condition: service_started
+      bank_b1:
+        condition: service_started
+      bank_b2:
+        condition: service_started
+      coordinator:
+        condition: service_healthy
+    healthcheck: *app-health
 
 volumes:
   db_a_data:
