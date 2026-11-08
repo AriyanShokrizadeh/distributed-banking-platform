@@ -1,4 +1,3 @@
-
 .DEFAULT_GOAL := help
 
 PYTHON ?= python
@@ -6,7 +5,8 @@ DOCKER ?= docker compose
 
 .PHONY: help install up down ps logs config \
         unit integration lint format typecheck check \
-        failover crash-prepared crash-commit
+        failover crash-prepared crash-commit \
+        demo-sharding demo-replicas demo-concurrency demo-transfers demo-cross-shard
 
 
 # Help
@@ -94,3 +94,19 @@ crash-prepared:
 
 crash-commit:
 	$(PYTHON) scripts/demo_2pc_crash.py --point commit
+
+# Required experiments
+demo-sharding:
+	$(PYTHON) -m scripts.demo_sharding
+
+demo-replicas:
+	$(PYTHON) -m scripts.demo_load_balancing
+
+demo-concurrency:
+	$(PYTHON) -m scripts.demo_concurrency
+
+demo-transfers:
+	$(PYTHON) -m scripts.demo_transfers
+
+demo-cross-shard:
+	$(PYTHON) -m scripts.demo_cross_shard
