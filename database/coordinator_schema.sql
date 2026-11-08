@@ -28,7 +28,7 @@ CREATE TABLE if NOT EXISTS
 
 CREATE TABLE IF NOT EXISTS
     transaction_participants (
-        transaction_id UUID NOT NULL FOREIGN KEY REFERENCES distributed_transactions (transaction_id),
+        transaction_id UUID NOT NULL REFERENCES distributed_transactions (transaction_id),
         shard_id VARCHAR(20) NOT NULL,
         prepared_gid VARCHAR(200) NOT NULL UNIQUE,
         prepare_ack_at TIMESTAMPTZ,
