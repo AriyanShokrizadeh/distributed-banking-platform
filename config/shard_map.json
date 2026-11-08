@@ -1,0 +1,23 @@
+{
+  "epoch": 1,
+  "shards": [
+    {
+      "id": "A",
+      "start": 1,
+      "end": 1000,
+      "replicas": [
+        "http://bank_a1:8000",
+        "http://bank_a2:8000"
+      ]
+    },
+    {
+      "id": "B",
+      "start": 1001,
+      "end": 2000,
+      "replicas": [
+        "http://bank_b1:8000",
+        "http://bank_b2:8000"
+      ]
+    }
+  ]
+}
