@@ -182,8 +182,12 @@ Participants use PostgreSQL `PREPARE TRANSACTION` followed by `COMMIT PREPARED` 
 python -m pip install -r requirements-dev.txt
 python -m pytest tests/unit -q
 RUN_INTEGRATION=1 python -m pytest tests/integration -q
-python scripts/demo_failover.py
-python scripts/demo_2pc_crash.py --point commit
+python -m scripts.run_all
+python -m scripts.demo_2pc_crash --point commit
 ```
 
 Integration tests and demos require the Docker services. **Limitations:** database failover, live re-sharding, and autonomous self-healing are not implemented. Run crash-injection demos with test data only.
+
+## Assignment demonstration scripts
+
+The seven required experiments have simplified, reusable scripts in [`scripts/README.md`](scripts/README.md), including account distribution, Round Robin, concurrency, failover under load, local and cross-shard transfers, Coordinator crash/recovery, and overlapping 2PC transfers. Run each demo with `python -m scripts.demo_NAME` from the project root after starting the Compose stack.
