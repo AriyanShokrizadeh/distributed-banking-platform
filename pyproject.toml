@@ -13,4 +13,4 @@ typeCheckingMode = "basic"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-markers = ["integration: requires a running Docker Compose stack"]
+markers = ["integration: requires a running banking stack (Compose or Kubernetes)"]

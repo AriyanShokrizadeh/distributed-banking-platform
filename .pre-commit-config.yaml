@@ -1,7 +1,7 @@
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -10,20 +10,9 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
 
-  - repo: local
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
     hooks:
       - id: ruff-check
-        name: Ruff lint
-        entry: ruff check --fix
-        language: python
-        additional_dependencies:
-          - "ruff>=0.8,<1"
-        types: [python]
-
+        args: [--fix]
       - id: ruff-format
-        name: Ruff format
-        entry: ruff format
-        language: python
-        additional_dependencies:
-          - "ruff>=0.8,<1"
-        types: [python]
