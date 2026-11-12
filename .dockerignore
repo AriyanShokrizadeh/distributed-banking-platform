@@ -10,6 +10,12 @@ __pycache__/
 build/
 dist/
 
+# Not needed in the runtime image
+database/
+k8s/
+scripts/
+tests/
+
 # Tests and tools
 .pytest_cache/
 .ruff_cache/
