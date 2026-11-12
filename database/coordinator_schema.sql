@@ -1,5 +1,5 @@
 -- Durable coordinator decisions and acknowledgments.
-CREATE TABLE if NOT EXISTS
+CREATE TABLE IF NOT EXISTS
     distributed_transactions (
         transaction_id UUID PRIMARY KEY,
         client_request_id UUID NOT NULL UNIQUE,
