@@ -1,12 +1,12 @@
 x-db-health: &db-health
-  test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+  test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
   interval: 3s
   timeout: 2s
   retries: 20
   start_period: 10s
 
 x-app-health: &app-health
-  test: ["CMD", "curl", "-fsS", "--max-time", "2", "http://127.0.0.1:8000/health/ready"]
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
   interval: 5s
   timeout: 3s
   retries: 6
@@ -26,11 +26,9 @@ x-seed: &seed
   restart: "no"
   environment:
     PGPASSWORD: ${BANK_DB_PASSWORD:?Missing password}
-  tmpfs:
-    - /var/lib/postgresql/data
 
 x-bank: &bank
-  image: ariyanshokrizadeh/banking_platform:banking-v0.1
+  image: banking-banking-platform:local
   build:
     context: .
     dockerfile: Dockerfile
@@ -38,19 +36,29 @@ x-bank: &bank
       SERVICE: banking
   healthcheck: *app-health
 
-x-shard-a: &shard-a
-  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
-  SHARD_ID: A
-  SHARD_START: "1"
-  SHARD_END: "1000"
-  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD:?Missing password}@db_a:5432/banking
+x-bank-a: &bank-a
+  <<: *bank
+  environment: &env-a
+    INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
+    SHARD_ID: A
+    SHARD_START: "1"
+    SHARD_END: "1000"
+    DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD}@db_a:5432/banking
+  depends_on:
+    seed_a:
+      condition: service_completed_successfully
 
-x-shard-b: &shard-b
-  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
-  SHARD_ID: B
-  SHARD_START: "1001"
-  SHARD_END: "2000"
-  DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD:?Missing password}@db_b:5432/banking
+x-bank-b: &bank-b
+  <<: *bank
+  environment: &env-b
+    INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing token}
+    SHARD_ID: B
+    SHARD_START: "1001"
+    SHARD_END: "2000"
+    DATABASE_URL: postgresql://banking:${BANK_DB_PASSWORD}@db_b:5432/banking
+  depends_on:
+    seed_b:
+      condition: service_completed_successfully
 
 services:
   db_a:
@@ -98,47 +106,27 @@ services:
     command: ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-1", "-h", "db_b", "-U", "banking", "-d", "banking", "-f", "/seed.sql"]
 
   bank_a1:
-    <<: *bank
+    <<: *bank-a
     container_name: bank_a1
-    environment:
-      <<: *shard-a
-      REPLICA_ID: A1
-    depends_on:
-      seed_a:
-        condition: service_completed_successfully
+    environment: { <<: *env-a, REPLICA_ID: A1 }
 
   bank_a2:
-    <<: *bank
+    <<: *bank-a
     container_name: bank_a2
-    environment:
-      <<: *shard-a
-      REPLICA_ID: A2
-    depends_on:
-      seed_a:
-        condition: service_completed_successfully
+    environment: { <<: *env-a, REPLICA_ID: A2 }
 
   bank_b1:
-    <<: *bank
+    <<: *bank-b
     container_name: bank_b1
-    environment:
-      <<: *shard-b
-      REPLICA_ID: B1
-    depends_on:
-      seed_b:
-        condition: service_completed_successfully
+    environment: { <<: *env-b, REPLICA_ID: B1 }
 
   bank_b2:
-    <<: *bank
+    <<: *bank-b
     container_name: bank_b2
-    environment:
-      <<: *shard-b
-      REPLICA_ID: B2
-    depends_on:
-      seed_b:
-        condition: service_completed_successfully
+    environment: { <<: *env-b, REPLICA_ID: B2 }
 
   coordinator:
-    image: ariyanshokrizadeh/banking_platform:cordinator-v0.1
+    image: coordinator-banking-platform:local
     container_name: coordinator
     build:
       context: .
@@ -157,7 +145,7 @@ services:
     healthcheck: *app-health
 
   gateway:
-    image: ariyanshokrizadeh/banking_platform:gateway-v0.1
+    image: gateway-banking-platform:local
     container_name: gateway
     build:
       context: .
