@@ -25,7 +25,7 @@ def transaction_mutex(
         conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
 
 
-def inspect(conn: Connection, shard: str, txid: UUID) -> tuple[str, str | None]:
+def transaction_state(conn: Connection, shard: str, txid: UUID) -> tuple[str, str | None]:
     with conn.cursor(row_factory=dict_row) as cursor:
         row = cursor.execute(
             """

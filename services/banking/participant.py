@@ -7,8 +7,8 @@ from psycopg import Connection, sql
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from services.banking.operations import update_balance
-from services.banking.participant_state import inspect, transaction_mutex
+from services.banking.accounts import update_balance
+from services.banking.participant_state import transaction_mutex, transaction_state
 from shared.api import Result
 from shared.two_phase import DecisionMessage, PrepareMessage, prepared_gid
 
@@ -76,7 +76,7 @@ def prepare(pool: ConnectionPool, shard: str, message: PrepareMessage) -> Result
     gid = prepared_gid(shard, txid, message.request_hash)
 
     with pool.connection() as conn, transaction_mutex(conn, shard, txid):
-        state, stored = inspect(conn, shard, txid)
+        state, stored = transaction_state(conn, shard, txid)
 
         if state in ("COMMITTED", "ABORTED"):
             if stored != message.request_hash:
@@ -105,7 +105,7 @@ def decide(pool: ConnectionPool, shard: str, message: DecisionMessage, decision:
     expected = "COMMITTED" if decision == "COMMIT" else "ABORTED"
 
     with pool.connection() as conn, transaction_mutex(conn, shard, txid):
-        state, stored = inspect(conn, shard, txid)
+        state, stored = transaction_state(conn, shard, txid)
 
         if state in ("COMMITTED", "ABORTED"):
             matches = stored == message.request_hash and state == expected
@@ -142,5 +142,5 @@ def decide(pool: ConnectionPool, shard: str, message: DecisionMessage, decision:
 
 def status(pool: ConnectionPool, shard: str, txid: UUID) -> dict[str, str]:
     with pool.connection() as conn, transaction_mutex(conn, shard, txid):
-        state, _ = inspect(conn, shard, txid)
+        state, _ = transaction_state(conn, shard, txid)
     return {"transaction_id": str(txid), "state": state, "shard": shard}
