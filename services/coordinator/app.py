@@ -18,7 +18,8 @@ from services.coordinator.store import (
     get_transaction,
     public_status,
 )
-from shared.api import IdempotencyKey, require_internal
+from shared.api import IdempotencyKey
+from shared.auth import require_internal
 from shared.contracts import TransferRequest
 from shared.settings import CoordinatorSettings
 from shared.sharding import ShardMap
@@ -46,9 +47,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             {shard.shard_id: list(shard.replicas) for shard in shard_map.shards},
             token,
         )
-        app.state.pool = pool
-        app.state.shard_map = shard_map
-        app.state.engine = engine
+        state = app.state
+        state.pool = pool
+        state.shard_map = shard_map
+        state.engine = engine
         engine.start()
         try:
             yield
@@ -76,12 +78,12 @@ def ready(request: Request) -> dict[str, str]:
     return {"status": "ready", "service": "coordinator"}
 
 
-@router.post("/transfers")
+@router.post("/transfers", response_model=None)
 def transfer(
     payload: TransferRequest,
     request: Request,
     idempotency_key: IdempotencyKey,
-) -> Any:
+) -> dict[str, Any] | JSONResponse:
     try:
         state = request.app.state
         txid = create_transaction(state.pool, state.shard_map, payload, idempotency_key)

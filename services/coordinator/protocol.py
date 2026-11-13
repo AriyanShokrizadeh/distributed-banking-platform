@@ -4,34 +4,26 @@ The database stores every decision *before* the coordinator sends commit/abort
 messages, so an interrupted transaction can safely be resumed.
 """
 
-import logging
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 from uuid import UUID
 
-import httpx
-
 from services.coordinator import store
+from services.coordinator.participants import ParticipantClient
 from services.coordinator.state_machine import prepare_instruction, recovery_action
 from services.coordinator.store import DatabasePool
 from shared.two_phase import advisory_key
-
-logger = logging.getLogger("banking.coordinator")
 
 
 class TwoPhaseProtocol:
     def __init__(self, pool: DatabasePool, endpoints: dict[str, list[str]], token: str):
         self.pool = pool
-        self.endpoints = endpoints
-        self.client = httpx.Client(
-            timeout=httpx.Timeout(22.0, connect=1.5),
-            headers={"X-Internal-Token": token},
-        )
+        self.participants = ParticipantClient(endpoints, token)
 
     def close(self) -> None:
-        self.client.close()
+        self.participants.close()
 
     @contextmanager
     def transaction_lock(self, txid: UUID) -> Generator[bool]:
@@ -48,26 +40,6 @@ class TwoPhaseProtocol:
             finally:
                 if acquired:
                     conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
-
-    def post(self, shard: str, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-        """Try replicas in order; treat protocol conflicts as terminal responses."""
-        for url in self.endpoints[shard]:
-            try:
-                response = self.client.post(url + path, json=payload)
-                if response.status_code == 200:
-                    return response.json()
-                if response.status_code in (409, 422):
-                    logger.error(
-                        "Protocol conflict: shard=%s path=%s body=%s",
-                        shard,
-                        path,
-                        response.text[:250],
-                    )
-                    return {"vote": "CONFLICT"}
-                logger.warning("Participant %s returned HTTP %s", url, response.status_code)
-            except (httpx.HTTPError, ValueError):
-                logger.warning("Participant %s unavailable", url)
-        return None
 
     def fault_once(self, label: str) -> None:
         """Demo-only: crash once after writing a durable recovery checkpoint."""
@@ -104,7 +76,7 @@ class TwoPhaseProtocol:
         store.set_status(self.pool, txid, "PREPARING")
 
         for shard in sorted((tx["source_shard"], tx["destination_shard"])):
-            reply = self.post(shard, "/internal/2pc/prepare", prepare_instruction(tx, shard))
+            reply = self.participants.post(shard, "/internal/2pc/prepare", prepare_instruction(tx, shard))
             if reply is None or reply.get("vote") != "YES":
                 store.record_decision(self.pool, txid, "ABORT")
                 return
@@ -134,7 +106,7 @@ class TwoPhaseProtocol:
             if participant["decision_ack_at"]:
                 continue
             shard = participant["shard_id"]
-            reply = self.post(shard, path, payload)
+            reply = self.participants.post(shard, path, payload)
             if reply and reply.get("vote") == "ACK" and reply.get("state") == expected_state:
                 store.record_decision_ack(self.pool, txid, shard)
 

@@ -139,14 +139,12 @@ def public_status(tx: dict[str, Any]) -> dict[str, Any]:
 
 def pending_ids(pool: DatabasePool) -> list[UUID]:
     with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
-        rows = cursor.execute(
-            """
+        rows = cursor.execute("""
             SELECT transaction_id FROM distributed_transactions
             WHERE status <> 'COMPLETED'
             ORDER BY created_at
             LIMIT 256
-            """
-        ).fetchall()
+            """).fetchall()
         return [row["transaction_id"] for row in rows]
 
 
@@ -169,7 +167,11 @@ def record_prepare_ack(pool: DatabasePool, txid: UUID, shard: str) -> None:
 def record_decision(pool: DatabasePool, txid: UUID, decision: str) -> None:
     state = "COMMIT_DECIDED" if decision == "COMMIT" else "ABORT_DECIDED"
 
-    with pool.connection() as conn, conn.transaction(), conn.cursor(row_factory=dict_row) as cursor:
+    with (
+        pool.connection() as conn,
+        conn.transaction(),
+        conn.cursor(row_factory=dict_row) as cursor,
+    ):
         row = cursor.execute(
             """
             SELECT decision FROM distributed_transactions
