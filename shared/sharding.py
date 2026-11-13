@@ -1,24 +1,20 @@
-"""Validated shard configuration and account routing."""
+"""Shard-map validation and account routing."""
 
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Self
 
-from pydantic import AliasChoices, ConfigDict, Field, TypeAdapter, model_validator
-from pydantic.dataclasses import dataclass as validated_dataclass
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 ACCOUNT_PATTERN = re.compile(r"A[0-9]{4}")
 
 
 class ShardRouteError(ValueError):
-    pass
+    """An account ID is invalid or has no configured owner."""
 
 
 def account_number(account_id: object) -> int:
-    """Return the numeric part of an account such as A0500."""
     if not isinstance(account_id, str):
         raise ShardRouteError("Account ID must be a string")
     if not ACCOUNT_PATTERN.fullmatch(account_id):
@@ -26,38 +22,38 @@ def account_number(account_id: object) -> int:
     return int(account_id[1:])
 
 
-@dataclass(frozen=True)
-class ShardConfig:
-    shard_id: Annotated[str, Field(min_length=1, validation_alias=AliasChoices("shard_id", "id"))]
-    start: Annotated[int, Field(ge=1, le=9999)]
-    end: Annotated[int, Field(ge=1, le=9999)]
-    replicas: Annotated[tuple[str, ...], Field(min_length=1)]
-
-
-@validated_dataclass(config=ConfigDict(revalidate_instances="always"))
-class ShardMap:
-    epoch: Annotated[int, Field(ge=1)]
-    shards: Annotated[Sequence[ShardConfig], Field(min_length=1)]
+class ShardConfig(BaseModel):
+    shard_id: str = Field(min_length=1, validation_alias=AliasChoices("shard_id", "id"))
+    start: int = Field(ge=1, le=9999)
+    end: int = Field(ge=1, le=9999)
+    replicas: tuple[str, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def check_shards(self) -> Self:
-        self.shards = tuple(sorted(self.shards, key=lambda shard: shard.start))
+    def validate_range(self) -> Self:
+        if self.start > self.end:
+            raise ValueError(f"Invalid shard range: {self.shard_id}")
+        return self
 
-        for shard in self.shards:
-            if shard.start > shard.end:
-                raise ValueError(f"Invalid shard range: {shard.shard_id}")
 
-        if len({shard.shard_id for shard in self.shards}) != len(self.shards):
+class ShardMap(BaseModel):
+    epoch: int = Field(ge=1)
+    shards: tuple[ShardConfig, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_shards(self) -> Self:
+        shards = sorted(self.shards, key=lambda shard: shard.start)
+        if len({shard.shard_id for shard in shards}) != len(shards):
             raise ValueError("Duplicate shard IDs")
 
-        for first, second in pairwise(self.shards):
+        for first, second in pairwise(shards):
             if first.end >= second.start:
                 raise ValueError(f"Overlapping shard ownership: {first.shard_id}/{second.shard_id}")
+        self.shards = tuple(shards)
         return self
 
     @classmethod
     def from_file(cls, path: str | Path) -> Self:
-        return TypeAdapter(cls).validate_json(Path(path).read_bytes())
+        return cls.model_validate_json(Path(path).read_bytes())
 
     def owner(self, account_id: str) -> ShardConfig:
         number = account_number(account_id)

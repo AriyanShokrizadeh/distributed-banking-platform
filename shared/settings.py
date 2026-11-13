@@ -22,7 +22,7 @@ class BankingSettings(ServiceSettings):
     replica_id: str = "A1"
     shard_start: int = Field(default=1, ge=1, le=9999)
     shard_end: int = Field(default=1000, ge=1, le=9999)
-    database_url: str = "postgresql://banking:banking@localhost:5432/banking"
+    database_url: str = ""
 
 
 class GatewaySettings(ServiceSettings):
