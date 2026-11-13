@@ -9,7 +9,7 @@ import httpx
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
-from shared.api import internal_headers
+from shared.auth import internal_headers
 
 logger = logging.getLogger("banking.gateway")
 
@@ -82,7 +82,8 @@ def shard_proxy(
     body: dict[str, Any] | None = None,
     key: UUID | None = None,
 ) -> Response:
-    registry = request.app.state.registry
+    state = request.app.state
+    registry = state.registry
     replicas = registry.candidates(shard)
     if not replicas:
         raise HTTPException(
@@ -94,9 +95,9 @@ def shard_proxy(
         )
 
     return forward(
-        request.app.state.client,
+        state.client,
         replicas,
-        request.app.state.token,
+        state.token,
         method,
         path,
         body,
@@ -112,10 +113,11 @@ def coordinator_proxy(
     body: dict[str, Any] | None = None,
     key: UUID | None = None,
 ) -> Response:
+    state = request.app.state
     return forward(
-        request.app.state.client,
-        [request.app.state.coordinator_url],
-        request.app.state.token,
+        state.client,
+        [state.coordinator_url],
+        state.token,
         method,
         path,
         body,

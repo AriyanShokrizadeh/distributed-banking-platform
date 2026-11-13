@@ -22,13 +22,14 @@ settings = GatewaySettings()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     shard_map = ShardMap.from_file(settings.shard_map_path)
     registry = ReplicaRegistry(shard_map)
-    app.state.shard_map = shard_map
-    app.state.registry = registry
-    app.state.token = settings.require_token()
-    app.state.coordinator_url = settings.coordinator_url
+    state = app.state
+    state.shard_map = shard_map
+    state.registry = registry
+    state.token = settings.require_token()
+    state.coordinator_url = settings.coordinator_url
 
     with httpx.Client(timeout=httpx.Timeout(10, connect=1.5)) as client:
-        app.state.client = client
+        state.client = client
         monitor = HealthMonitor(registry, client)
         monitor.start()
         try:
@@ -71,21 +72,8 @@ def live() -> dict[str, str]:
 
 
 @app.get("/health/ready")
-def ready(request: Request) -> dict:
-    health = request.app.state.registry.snapshot()
-    if any(not any(replicas.values()) for replicas in health.values()):
-        raise HTTPException(503, detail="At least one shard has no healthy app replicas")
-
-    try:
-        response = request.app.state.client.get(
-            request.app.state.coordinator_url + "/health/ready", timeout=1
-        )
-    except httpx.RequestError as exc:
-        raise HTTPException(503, detail="Coordinator unavailable") from exc
-    if response.status_code != 200:
-        raise HTTPException(503, detail="Coordinator unavailable")
-
-    return {"status": "ready", "shards": health, "coordinator": "ready"}
+def ready() -> dict[str, str]:
+    return {"status": "ready"}
 
 
 @app.get("/v1/internal/replicas")

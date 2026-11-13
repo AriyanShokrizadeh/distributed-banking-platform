@@ -1,4 +1,4 @@
-"""Round-robin replica routing and periodic health checks."""
+"""Round-robin routing and health checks for banking replicas."""
 
 import threading
 
@@ -9,55 +9,50 @@ from shared.sharding import ShardMap
 
 class ReplicaRegistry:
     def __init__(self, shard_map: ShardMap) -> None:
-        self.lock = threading.Lock()
-        self.urls = {shard.shard_id: list(shard.replicas) for shard in shard_map.shards}
-        self.healthy = {url: False for urls in self.urls.values() for url in urls}
-        self.counter = dict.fromkeys(self.urls, 0)
+        self._lock = threading.Lock()
+        self.replicas = {shard.shard_id: shard.replicas for shard in shard_map.shards}
+        self.health = {url: False for urls in self.replicas.values() for url in urls}
+        self.next_index = dict.fromkeys(self.replicas, 0)
 
     def set_health(self, url: str, healthy: bool) -> None:
-        with self.lock:
-            if url not in self.healthy:
+        with self._lock:
+            if url not in self.health:
                 raise ValueError(f"Unexpected replica: {url}")
-            self.healthy[url] = healthy
+            self.health[url] = healthy
 
     def candidates(self, shard_id: str) -> list[str]:
-        """Return healthy replicas in round-robin order within the requested shard."""
-        with self.lock:
-            if shard_id not in self.urls:
+        """Rotate only the healthy replicas of the requested shard."""
+        with self._lock:
+            if shard_id not in self.replicas:
                 raise ValueError(f"Unknown shard: {shard_id}")
 
-            available = [url for url in self.urls[shard_id] if self.healthy[url]]
+            available = [url for url in self.replicas[shard_id] if self.health[url]]
             if not available:
                 return []
 
-            index = self.counter[shard_id] % len(available)
-            self.counter[shard_id] += 1
-            return available[index:] + available[:index]
+            start = self.next_index[shard_id] % len(available)
+            self.next_index[shard_id] += 1
+            return available[start:] + available[:start]
 
     def snapshot(self) -> dict[str, dict[str, bool]]:
-        with self.lock:
+        with self._lock:
             return {
-                shard: {url: self.healthy[url] for url in replicas} for shard, replicas in self.urls.items()
+                shard: {url: self.health[url] for url in replicas}
+                for shard, replicas in self.replicas.items()
             }
 
 
 class HealthMonitor:
-    def __init__(
-        self,
-        registry: ReplicaRegistry,
-        client: httpx.Client,
-        interval: float = 2,
-    ) -> None:
+    def __init__(self, registry: ReplicaRegistry, client: httpx.Client, interval: float = 2) -> None:
         self.registry = registry
         self.client = client
         self.interval = interval
-        self.stop_event = threading.Event()
-        self.thread = threading.Thread(target=self.run, name="replica-health", daemon=True)
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self.run, name="replica-health", daemon=True)
 
     def refresh(self) -> None:
-        """Check each replica and reuse the shared HTTP client."""
-        for replicas in self.registry.urls.values():
-            for url in replicas:
+        for urls in self.registry.replicas.values():
+            for url in urls:
                 try:
                     healthy = self.client.get(f"{url}/health/ready", timeout=0.8).status_code == 200
                 except httpx.RequestError:
@@ -65,13 +60,13 @@ class HealthMonitor:
                 self.registry.set_health(url, healthy)
 
     def run(self) -> None:
-        while not self.stop_event.wait(self.interval):
+        while not self._stop_event.wait(self.interval):
             self.refresh()
 
     def start(self) -> None:
         self.refresh()
-        self.thread.start()
+        self._thread.start()
 
     def stop(self) -> None:
-        self.stop_event.set()
-        self.thread.join()
+        self._stop_event.set()
+        self._thread.join()
