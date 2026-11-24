@@ -1,20 +1,27 @@
+# Shared health checks
 x-db-health: &db-health
-  test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+  test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
   interval: 3s
   timeout: 2s
   retries: 20
   start_period: 10s
 
 x-app-health: &app-health
-  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
+  test:
+    - CMD
+    - python
+    - -c
+    - >-
+      import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)
   interval: 5s
   timeout: 3s
   retries: 6
   start_period: 10s
 
+# Reusable service definitions
 x-bank-db: &bank-db
   image: postgres:16-alpine
-  command: ["postgres", "-c", "max_prepared_transactions=100"]
+  command: [ "postgres", "-c", "max_prepared_transactions=100" ]
   environment:
     POSTGRES_DB: banking
     POSTGRES_USER: banking
@@ -28,7 +35,7 @@ x-seed: &seed
     PGPASSWORD: ${BANK_DB_PASSWORD:?Missing password}
 
 x-bank: &bank
-  image: banking-banking-platform:local
+  image: ariyanshokrizadeh/banking-platform:banking-v1
   build:
     context: .
     dockerfile: Dockerfile
@@ -61,6 +68,7 @@ x-bank-b: &bank-b
       condition: service_completed_successfully
 
 services:
+  # Persistent databases
   db_a:
     <<: *bank-db
     container_name: db_a
@@ -87,6 +95,7 @@ services:
       - ./database/coordinator_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     healthcheck: *db-health
 
+  # One-time account initialization
   seed_a:
     <<: *seed
     depends_on:
@@ -94,7 +103,7 @@ services:
         condition: service_healthy
     volumes:
       - ./database/seed_a.sql:/seed.sql:ro
-    command: ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-1", "-h", "db_a", "-U", "banking", "-d", "banking", "-f", "/seed.sql"]
+    command: [ "psql", "-X", "-v", "ON_ERROR_STOP=1", "-1", "-h", "db_a", "-U", "banking", "-d", "banking", "-f", "/seed.sql" ]
 
   seed_b:
     <<: *seed
@@ -103,30 +112,40 @@ services:
         condition: service_healthy
     volumes:
       - ./database/seed_b.sql:/seed.sql:ro
-    command: ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-1", "-h", "db_b", "-U", "banking", "-d", "banking", "-f", "/seed.sql"]
+    command: [ "psql", "-X", "-v", "ON_ERROR_STOP=1", "-1", "-h", "db_b", "-U", "banking", "-d", "banking", "-f", "/seed.sql" ]
 
+  # Application replicas (two per shard)
   bank_a1:
     <<: *bank-a
     container_name: bank_a1
-    environment: { <<: *env-a, REPLICA_ID: A1 }
+    environment:
+      <<: *env-a
+      REPLICA_ID: A1
 
   bank_a2:
     <<: *bank-a
     container_name: bank_a2
-    environment: { <<: *env-a, REPLICA_ID: A2 }
+    environment:
+      <<: *env-a
+      REPLICA_ID: A2
 
   bank_b1:
     <<: *bank-b
     container_name: bank_b1
-    environment: { <<: *env-b, REPLICA_ID: B1 }
+    environment:
+      <<: *env-b
+      REPLICA_ID: B1
 
   bank_b2:
     <<: *bank-b
     container_name: bank_b2
-    environment: { <<: *env-b, REPLICA_ID: B2 }
+    environment:
+      <<: *env-b
+      REPLICA_ID: B2
 
+  # Distributed transaction coordinator
   coordinator:
-    image: coordinator-banking-platform:local
+    image: ariyanshokrizadeh/banking-platform:coordinator-v1
     container_name: coordinator
     build:
       context: .
@@ -144,8 +163,9 @@ services:
         condition: service_healthy
     healthcheck: *app-health
 
+  # Public HTTP entry point
   gateway:
-    image: gateway-banking-platform:local
+    image: ariyanshokrizadeh/banking-platform:gateway-v1
     container_name: gateway
     build:
       context: .
@@ -171,6 +191,7 @@ services:
         condition: service_healthy
     healthcheck: *app-health
 
+# Named volumes persist across regular `docker compose down`
 volumes:
   db_a_data:
     name: db_a_data
