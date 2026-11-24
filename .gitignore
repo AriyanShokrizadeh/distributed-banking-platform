@@ -31,3 +31,10 @@ htmlcov/
 Thumbs.db
 *.log
 *.tmp
+
+# Local demo output and recovery material
+evidence/
+banking-backups/
+restore-plan*/
+*.sql.gz
+backup_dr/
