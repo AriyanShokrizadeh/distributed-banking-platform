@@ -1,14 +1,18 @@
-"""Durable coordinator transactions and participant acknowledgments."""
+"""Coordinator persistence: idempotency, decisions and acknowledgments.
+
+Each final decision is durably stored before notifying participants.
+"""
 
 from typing import Any
 from uuid import UUID, uuid4
 
-from psycopg import Connection, sql
+from psycopg import Connection, Cursor, sql
 from psycopg.rows import TupleRow, dict_row
 from psycopg_pool import ConnectionPool
 
 from services.coordinator.state_machine import assert_decision_not_reversed
 from shared.contracts import TransferRequest
+from shared.observability import DECISIONS
 from shared.sharding import ShardMap
 from shared.two_phase import prepared_gid, transfer_hash
 
@@ -16,7 +20,40 @@ DatabasePool = ConnectionPool[Connection[TupleRow]]
 
 
 class IdempotencyConflict(ValueError):
-    pass
+    """An idempotency key was reused for a different transfer."""
+
+
+def _create_participants(
+    cursor: Cursor[dict[str, Any]],
+    txid: UUID,
+    shards: tuple[str, str],
+    fingerprint: str,
+) -> None:
+    """Create both 2PC participant rows in the new transaction's SQL transaction."""
+    cursor.executemany(
+        """
+        INSERT INTO transaction_participants (transaction_id, shard_id, prepared_gid)
+        VALUES (%s, %s, %s)
+        """,
+        [(txid, shard, prepared_gid(shard, txid, fingerprint)) for shard in sorted(shards)],
+    )
+
+
+def _existing_transaction_id(cursor: Cursor[dict[str, Any]], key: UUID, fingerprint: str) -> UUID:
+    """Idempotent retry: accept only the exact original transfer."""
+    stored = cursor.execute(
+        """
+        SELECT transaction_id, request_hash
+        FROM distributed_transactions
+        WHERE client_request_id = %s
+        """,
+        (key,),
+    ).fetchone()
+    if stored is None:
+        raise RuntimeError("Transaction disappeared")
+    if stored["request_hash"] != fingerprint:
+        raise IdempotencyConflict("Idempotency-Key reused with different transfer details")
+    return stored["transaction_id"]
 
 
 def create_transaction(
@@ -67,34 +104,12 @@ def create_transaction(
             ),
         ).fetchone()
 
-        if row is not None:
-            txid = row["transaction_id"]
-            cursor.executemany(
-                """
-                INSERT INTO transaction_participants (transaction_id, shard_id, prepared_gid)
-                VALUES (%s, %s, %s)
-                """,
-                [
-                    (txid, shard, prepared_gid(shard, txid, fingerprint))
-                    for shard in sorted((source, destination))
-                ],
-            )
-            return txid
+        if row is None:
+            return _existing_transaction_id(cursor, key, fingerprint)
 
-        stored = cursor.execute(
-            """
-            SELECT transaction_id, request_hash
-            FROM distributed_transactions
-            WHERE client_request_id = %s
-            """,
-            (key,),
-        ).fetchone()
-
-        if stored is None:
-            raise RuntimeError("Transaction disappeared")
-        if stored["request_hash"] != fingerprint:
-            raise IdempotencyConflict("Idempotency-Key reused with different transfer details")
-        return stored["transaction_id"]
+        txid = row["transaction_id"]
+        _create_participants(cursor, txid, (source, destination), fingerprint)
+        return txid
 
 
 def get_transaction(pool: DatabasePool, txid: UUID) -> dict[str, Any] | None:
@@ -118,6 +133,7 @@ def get_transaction(pool: DatabasePool, txid: UUID) -> dict[str, Any] | None:
 
 
 def public_status(tx: dict[str, Any]) -> dict[str, Any]:
+    """Expose only completed transfers as successful, never undecided ones."""
     return {
         "transaction_id": str(tx["transaction_id"]),
         "status": "COMPLETED" if tx["status"] == "COMPLETED" else "PENDING",
@@ -138,6 +154,7 @@ def public_status(tx: dict[str, Any]) -> dict[str, Any]:
 
 
 def pending_ids(pool: DatabasePool) -> list[UUID]:
+    """Load unfinished transactions for the background recovery worker."""
     with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute("""
             SELECT transaction_id FROM distributed_transactions
@@ -196,6 +213,9 @@ def record_decision(pool: DatabasePool, txid: UUID, decision: str) -> None:
             """,
             (state, decision, txid),
         )
+
+    # Only newly committed durable decisions are recorded.
+    DECISIONS.labels(decision).inc()
 
 
 def record_acknowledgment(pool: DatabasePool, txid: UUID, shard: str, column: str) -> None:

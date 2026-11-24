@@ -1,4 +1,4 @@
-"""Read and update account balances with idempotency."""
+"""Account balances: atomic updates and persistent idempotency receipts."""
 
 from uuid import UUID
 
@@ -43,6 +43,19 @@ def read_balance(pool: ConnectionPool, account_id: str) -> Result:
     )
 
 
+def _balance_change_error(cursor: AccountCursor, account_id: str, delta: int) -> Result:
+    """Explain why an atomic UPDATE did not change an account."""
+    exists = cursor.execute(
+        "SELECT 1 FROM accounts WHERE account_id = %s",
+        (account_id,),
+    ).fetchone()
+    if exists is None:
+        return account_not_found(account_id)
+    if delta > 0:
+        return error("BALANCE_OVERFLOW", "Balance would exceed BIGINT range", 409)
+    return error("INSUFFICIENT_FUNDS", "Insufficient available balance", 409)
+
+
 def change_balance(
     pool: ConnectionPool,
     account_id: str,
@@ -60,15 +73,7 @@ def change_balance(
                 {"account_id": account_id, "balance_minor": balance, "operation": kind},
             )
 
-        exists = cursor.execute(
-            "SELECT 1 FROM accounts WHERE account_id = %s",
-            (account_id,),
-        ).fetchone()
-        if exists is None:
-            return account_not_found(account_id)
-        if delta > 0:
-            return error("BALANCE_OVERFLOW", "Balance would exceed BIGINT range", 409)
-        return error("INSUFFICIENT_FUNDS", "Insufficient available balance", 409)
+        return _balance_change_error(cursor, account_id, delta)
 
     return execute_once(
         pool,

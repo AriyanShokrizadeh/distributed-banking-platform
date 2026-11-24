@@ -11,6 +11,12 @@ from psycopg import Connection, Error as DatabaseError
 from psycopg.rows import TupleRow, tuple_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
+from shared.api import IdempotencyKey
+from shared.auth import require_internal
+from shared.contracts import TransferRequest
+from shared.observability import observe
+from shared.settings import CoordinatorSettings
+from shared.sharding import ShardMap
 from services.coordinator.engine import Engine
 from services.coordinator.store import (
     IdempotencyConflict,
@@ -18,11 +24,6 @@ from services.coordinator.store import (
     get_transaction,
     public_status,
 )
-from shared.api import IdempotencyKey
-from shared.auth import require_internal
-from shared.contracts import TransferRequest
-from shared.settings import CoordinatorSettings
-from shared.sharding import ShardMap
 
 settings = CoordinatorSettings()
 
@@ -30,11 +31,8 @@ settings = CoordinatorSettings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     token = settings.require_token()
-    if not settings.database_url:
-        raise RuntimeError("DATABASE_URL must be set")
-
     with ConnectionPool(
-        settings.database_url,
+        settings.require_database_url(),
         connection_class=Connection[TupleRow],
         min_size=2,
         max_size=24,
@@ -94,9 +92,9 @@ def transfer(
             raise RuntimeError("Transaction missing after creation")
 
         result = public_status(transaction)
-        if transaction["status"] == "COMPLETED":
-            return result
-        return JSONResponse(status_code=202, content=result)
+        if transaction["status"] != "COMPLETED":
+            return JSONResponse(status_code=202, content=result)
+        return result
 
     except IdempotencyConflict as exc:
         raise HTTPException(
@@ -125,3 +123,5 @@ def transaction_status(transaction_id: UUID, request: Request) -> dict[str, Any]
 
 
 app.include_router(router)
+
+observe(app, "coordinator")

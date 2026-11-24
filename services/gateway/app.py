@@ -8,12 +8,13 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
-from services.gateway.proxy import coordinator_proxy, shard_proxy
-from services.gateway.routing import HealthMonitor, ReplicaRegistry
 from shared.api import IdempotencyKey
 from shared.contracts import AmountRequest, TransferRequest
+from shared.observability import observe
 from shared.settings import GatewaySettings
 from shared.sharding import ShardMap, ShardRouteError
+from services.gateway.proxy import coordinator_proxy, shard_proxy
+from services.gateway.routing import HealthMonitor, ReplicaRegistry
 
 settings = GatewaySettings()
 
@@ -129,3 +130,6 @@ def transfer(payload: TransferRequest, request: Request, idempotency_key: Idempo
 @app.get("/v1/transactions/{transaction_id}")
 def transaction_status(transaction_id: UUID, request: Request) -> Response:
     return coordinator_proxy(request, "GET", f"/internal/2pc/transactions/{transaction_id}")
+
+
+observe(app, "gateway")

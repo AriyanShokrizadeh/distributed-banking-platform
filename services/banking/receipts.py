@@ -1,4 +1,7 @@
-"""Store a request receipt and its account mutation in one transaction."""
+"""Persist idempotency receipts alongside the corresponding balance change.
+
+Retries replay the stored response, not the original side effect.
+"""
 
 from collections.abc import Callable
 from typing import Any
@@ -39,6 +42,18 @@ def replay_receipt(cursor: AccountCursor, key: UUID, fingerprint: str, operation
     return Result(receipt["response_http_status"], receipt["response_payload"])
 
 
+def _save_receipt(cursor: AccountCursor, key: UUID, result: Result) -> None:
+    """Finalize the receipt inside the same transaction as its mutation."""
+    cursor.execute(
+        """
+        UPDATE request_receipts
+        SET status = 'COMPLETED', response_http_status = %s, response_payload = %s
+        WHERE request_id = %s
+        """,
+        (result.status_code, Jsonb(result.body), key),
+    )
+
+
 def execute_once(
     pool: ConnectionPool,
     key: UUID,
@@ -46,7 +61,7 @@ def execute_once(
     payload: dict[str, Any],
     mutation: Callable[[AccountCursor], Result],
 ) -> Result:
-    """Replay completed requests without running the mutation again."""
+    """Execute the mutation once and store its reply in the same SQL transaction."""
     fingerprint = request_fingerprint(operation, payload)
 
     with (
@@ -69,12 +84,5 @@ def execute_once(
             return replay_receipt(cursor, key, fingerprint, operation)
 
         result = mutation(cursor)
-        cursor.execute(
-            """
-            UPDATE request_receipts
-            SET status = 'COMPLETED', response_http_status = %s, response_payload = %s
-            WHERE request_id = %s
-            """,
-            (result.status_code, Jsonb(result.body), key),
-        )
+        _save_receipt(cursor, key, result)
         return result

@@ -1,4 +1,7 @@
-"""Small background worker that retries unfinished 2PC transactions."""
+"""Bounded recovery of unfinished 2PC transfers.
+
+The database owns transaction state; this worker only schedules attempts.
+"""
 
 import logging
 import threading
@@ -6,6 +9,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from uuid import UUID
 
+from shared.observability import RECOVERY_FAILURES
 from services.coordinator import store
 from services.coordinator.protocol import TwoPhaseProtocol
 from services.coordinator.store import DatabasePool
@@ -28,7 +32,10 @@ class Engine:
         self.workers = workers
         self.poll_interval = poll_interval
         self.protocol = TwoPhaseProtocol(pool, endpoints, token)
-        self.executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="2pc")
+        self.executor = ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="2pc",
+        )
         self.stop_event = threading.Event()
         self.wake_event = threading.Event()
         self.lock = threading.Lock()
@@ -59,8 +66,18 @@ class Engine:
             self.wake_event.wait(self.poll_interval)
             self.wake_event.clear()
 
+    def _submit(self, txid: UUID) -> None:
+        """Submit reserved work, releasing its slot if submission fails."""
+        try:
+            future = self.executor.submit(self.protocol.resolve, txid)
+        except Exception:
+            with self.lock:
+                self.inflight.discard(txid)
+            raise
+        future.add_done_callback(lambda task, tid=txid: self.finish(tid, task))
+
     def schedule_pending(self) -> None:
-        """Bound concurrent recovery work and skip recently attempted IDs."""
+        """Schedule durable unfinished transactions within the worker limit."""
         now = time.monotonic()
         with self.lock:
             self.cooldown = {
@@ -75,18 +92,13 @@ class Engine:
                     continue
                 self.inflight.add(txid)
 
-            try:
-                future = self.executor.submit(self.protocol.resolve, txid)
-            except Exception:
-                with self.lock:
-                    self.inflight.discard(txid)
-                raise
-            future.add_done_callback(lambda task, tid=txid: self.finish(tid, task))
+            self._submit(txid)
 
     def finish(self, txid: UUID, future: Future[None]) -> None:
         try:
             future.result()
         except Exception:
+            RECOVERY_FAILURES.inc()
             logger.exception("Failed to resolve transaction %s", txid)
         finally:
             with self.lock:

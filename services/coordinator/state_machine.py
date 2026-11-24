@@ -2,18 +2,18 @@
 
 from typing import Any, Mapping
 
+from shared.two_phase import DECISION_OUTCOME
+
 
 def recovery_action(status: str, decision: str | None) -> str:
     if status == "COMPLETED":
         if decision not in ("COMMIT", "ABORT"):
             raise ValueError("COMPLETED needs a durable decision")
         return "DONE"
-    if decision == "COMMIT":
-        return "DRIVE_COMMIT"
-    if decision == "ABORT":
-        return "DRIVE_ABORT"
     if decision is not None:
-        raise ValueError("Unknown decision")
+        if decision not in DECISION_OUTCOME:
+            raise ValueError("Unknown decision")
+        return f"DRIVE_{decision}"
     if status in ("INITIATED", "PREPARING"):
         return "PREPARE"
     if status == "PREPARED":
@@ -22,7 +22,7 @@ def recovery_action(status: str, decision: str | None) -> str:
 
 
 def assert_decision_not_reversed(existing: str | None, requested: str) -> None:
-    if requested not in ("COMMIT", "ABORT"):
+    if requested not in DECISION_OUTCOME:
         raise ValueError("Invalid decision")
     if existing is not None and existing != requested:
         raise ValueError("A durable 2PC decision cannot be reversed")

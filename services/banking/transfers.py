@@ -1,4 +1,4 @@
-"""Execute transfers between accounts owned by the same shard."""
+"""Atomic same-shard transfers with deterministic row locking."""
 
 from uuid import UUID, uuid4
 
@@ -11,7 +11,7 @@ from shared.contracts import MAX_BIGINT
 
 
 def apply_local_transfer(cursor: AccountCursor, source: str, destination: str, amount_minor: int) -> UUID:
-    """Apply both balance changes and write matching ledger entries atomically."""
+    """Apply both balance changes and ledger entries in one SQL transaction."""
     transaction_id = uuid4()
     changes = ((source, -amount_minor), (destination, amount_minor))
 
@@ -44,6 +44,7 @@ def local_transfer(
 
         balances: dict[str, int] = {}
 
+        # Stable lock order reduces the risk of deadlocks under concurrency.
         for account_id in sorted((source, destination)):
             row = cursor.execute(
                 "SELECT balance_minor FROM accounts WHERE account_id = %s FOR UPDATE",

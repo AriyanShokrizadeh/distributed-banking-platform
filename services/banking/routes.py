@@ -33,7 +33,7 @@ def check_owner(account_id: str) -> None:
             409,
             detail={
                 "code": "SHARD_MISMATCH",
-                "message": (f"Account {account_id} does not belong to shard {settings.shard_id}"),
+                "message": f"Account {account_id} does not belong to shard {settings.shard_id}",
             },
         )
 

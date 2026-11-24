@@ -1,4 +1,8 @@
-"""Proxy requests to healthy shard replicas or the 2PC Coordinator."""
+"""Forward requests to a shard replica or the durable 2PC Coordinator.
+
+On a transport error, retry with the *same* idempotency key. Never interpret
+an unavailable upstream as a failed banking transaction: its result is unknown.
+"""
 
 import logging
 from collections.abc import Callable
@@ -12,13 +16,13 @@ from fastapi.responses import Response
 from shared.auth import internal_headers
 
 logger = logging.getLogger("banking.gateway")
+REPLICA_HEADERS = ("x-replica-id", "x-shard-id")
+UNCERTAIN_OUTCOME_MESSAGE = "Upstream unavailable. Retry using the same Idempotency-Key."
 
 
 def gateway_response(upstream: httpx.Response) -> Response:
-    """Preserve the upstream status, JSON body, and replica-identifying headers."""
-    headers = {
-        name: upstream.headers[name] for name in ("x-replica-id", "x-shard-id") if name in upstream.headers
-    }
+    """Preserve HTTP status, body and replica headers from the upstream."""
+    headers = {name: upstream.headers[name] for name in REPLICA_HEADERS if name in upstream.headers}
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
@@ -38,7 +42,11 @@ def forward(
     mark_down: Callable[[str, bool], None] | None = None,
     timeout: float = 10,
 ) -> Response:
-    """Try the next replica only after a transport failure, never an HTTP error."""
+    """Use the next replica only for transport failures, not HTTP errors.
+
+    In particular, an HTTP 409 is returned immediately and an uncertain POST
+    is never retried with a *different* Idempotency-Key.
+    """
     headers = internal_headers(token, key)
     request_timeout = httpx.Timeout(timeout, connect=1.5)
 
@@ -67,10 +75,7 @@ def forward(
 
     raise HTTPException(
         503,
-        detail={
-            "code": "UNCERTAIN_OUTCOME",
-            "message": "Upstream unavailable. Retry using the same Idempotency-Key.",
-        },
+        detail={"code": "UNCERTAIN_OUTCOME", "message": UNCERTAIN_OUTCOME_MESSAGE},
     )
 
 
@@ -82,10 +87,10 @@ def shard_proxy(
     body: dict[str, Any] | None = None,
     key: UUID | None = None,
 ) -> Response:
+    """Forward only to replicas declared healthy for the requested shard."""
     state = request.app.state
-    registry = state.registry
-    replicas = registry.candidates(shard)
-    if not replicas:
+    candidates = state.registry.candidates(shard)
+    if not candidates:
         raise HTTPException(
             503,
             detail={
@@ -96,13 +101,13 @@ def shard_proxy(
 
     return forward(
         state.client,
-        replicas,
+        candidates,
         state.token,
         method,
         path,
         body,
         key,
-        mark_down=registry.set_health,
+        mark_down=state.registry.set_health,
     )
 
 
@@ -113,6 +118,7 @@ def coordinator_proxy(
     body: dict[str, Any] | None = None,
     key: UUID | None = None,
 ) -> Response:
+    """Reach the Coordinator through its stable service endpoint."""
     state = request.app.state
     return forward(
         state.client,

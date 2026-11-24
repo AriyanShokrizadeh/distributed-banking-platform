@@ -1,4 +1,4 @@
-"""Round-robin routing and health checks for banking replicas."""
+"""Thread-safe shard routing and periodic readiness checks."""
 
 import threading
 
@@ -8,6 +8,8 @@ from shared.sharding import ShardMap
 
 
 class ReplicaRegistry:
+    """Track readiness and round-robin positions independently per shard."""
+
     def __init__(self, shard_map: ShardMap) -> None:
         self._lock = threading.Lock()
         self.replicas = {shard.shard_id: shard.replicas for shard in shard_map.shards}
@@ -21,7 +23,7 @@ class ReplicaRegistry:
             self.health[url] = healthy
 
     def candidates(self, shard_id: str) -> list[str]:
-        """Rotate only the healthy replicas of the requested shard."""
+        """Rotate ready replicas; never spill traffic into another shard."""
         with self._lock:
             if shard_id not in self.replicas:
                 raise ValueError(f"Unknown shard: {shard_id}")
@@ -43,6 +45,8 @@ class ReplicaRegistry:
 
 
 class HealthMonitor:
+    """Mark replicas ready only when their database readiness probe passes."""
+
     def __init__(self, registry: ReplicaRegistry, client: httpx.Client, interval: float = 2) -> None:
         self.registry = registry
         self.client = client
@@ -50,14 +54,18 @@ class HealthMonitor:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self.run, name="replica-health", daemon=True)
 
+    def _is_ready(self, url: str) -> bool:
+        """A failed probe never counts as a healthy banking replica."""
+        try:
+            response = self.client.get(f"{url}/health/ready", timeout=0.8)
+        except httpx.RequestError:
+            return False
+        return response.status_code == 200
+
     def refresh(self) -> None:
-        for urls in self.registry.replicas.values():
-            for url in urls:
-                try:
-                    healthy = self.client.get(f"{url}/health/ready", timeout=0.8).status_code == 200
-                except httpx.RequestError:
-                    healthy = False
-                self.registry.set_health(url, healthy)
+        for replicas in self.registry.replicas.values():
+            for url in replicas:
+                self.registry.set_health(url, self._is_ready(url))
 
     def run(self) -> None:
         while not self._stop_event.wait(self.interval):
