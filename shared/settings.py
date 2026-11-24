@@ -17,12 +17,20 @@ class ServiceSettings(BaseSettings):
         return self.internal_api_token
 
 
-class BankingSettings(ServiceSettings):
+class DatabaseSettings(ServiceSettings):
+    database_url: str = ""
+
+    def require_database_url(self) -> str:
+        if not self.database_url:
+            raise RuntimeError("DATABASE_URL must be set")
+        return self.database_url
+
+
+class BankingSettings(DatabaseSettings):
     shard_id: str = "A"
     replica_id: str = "A1"
     shard_start: int = Field(default=1, ge=1, le=9999)
     shard_end: int = Field(default=1000, ge=1, le=9999)
-    database_url: str = ""
 
 
 class GatewaySettings(ServiceSettings):
@@ -30,6 +38,5 @@ class GatewaySettings(ServiceSettings):
     coordinator_url: str = "http://coordinator:8000"
 
 
-class CoordinatorSettings(ServiceSettings):
+class CoordinatorSettings(DatabaseSettings):
     shard_map_path: Path = DEFAULT_SHARD_MAP
-    database_url: str = ""

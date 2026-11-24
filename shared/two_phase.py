@@ -11,6 +11,9 @@ from shared.contracts import PositiveAmount, request_fingerprint
 
 RequestHash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
+# A durable Coordinator decision corresponds to exactly one participant outcome.
+DECISION_OUTCOME = {"COMMIT": "COMMITTED", "ABORT": "ABORTED"}
+
 
 class PrepareMessage(BaseModel):
     transaction_id: UUID
@@ -41,7 +44,7 @@ def prepared_gid(shard: str, txid: UUID, fingerprint: str) -> str:
         raise ValueError("Unsupported shard")
     if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         raise ValueError("Invalid fingerprint")
-    return f"bank:{shard}:{txid}:{fingerprint[:24]}"
+    return gid_prefix(shard, txid) + fingerprint[:24]
 
 
 def gid_prefix(shard: str, txid: UUID) -> str:
