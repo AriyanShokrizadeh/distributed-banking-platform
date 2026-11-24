@@ -4,3 +4,4 @@ httpx>=0.28,<1
 pydantic>=2.14,<3
 pydantic-settings>=2,<3
 psycopg[binary,pool]>=3.3,<4
+prometheus-client>=0.21,<1
