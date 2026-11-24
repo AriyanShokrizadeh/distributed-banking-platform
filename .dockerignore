@@ -40,3 +40,11 @@ htmlcov/
 *.rar
 .DS_Store
 Thumbs.db
+
+# Local demo output and recovery material
+evidence/
+banking-backups/
+restore-plan*/
+*.sql.gz
+SHA256SUMS
+backup_dr/
